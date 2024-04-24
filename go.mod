@@ -5,7 +5,6 @@ go 1.16
 require (
 	github.com/Shopify/sarama v1.26.4
 	github.com/actiontech/golang-live-coverage-report v0.0.0-20210902074032-43aa91afdc2c
-	github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751
 	github.com/araddon/qlbridge v0.0.0-00010101000000-000000000000
 	github.com/armon/go-metrics v0.3.4
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
@@ -15,7 +14,6 @@ require (
 	github.com/go-playground/universal-translator v0.17.0 // indirect
 	github.com/go-playground/validator v9.31.0+incompatible
 	github.com/go-sql-driver/mysql v1.6.0
-	github.com/godror/godror v0.33.4-0.20220713161431-268adc0d5f6b
 	github.com/hashicorp/go-hclog v1.0.0
 	github.com/hashicorp/nomad v1.1.2
 	github.com/hashicorp/nomad/api v0.0.0-20200529203653-c4416b26d3eb
@@ -37,10 +35,8 @@ require (
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b
 	github.com/shirou/gopsutil/v3 v3.21.11
 	github.com/siddontang/go v0.0.0-20180604090527-bdc77568d726
-	github.com/sjjian/oracle-sql-parser v0.0.0-20211213072517-76c7fe105991
 	github.com/swaggo/echo-swagger v1.1.0
 	github.com/swaggo/swag v1.7.0
-	github.com/thinkeridea/go-extend v1.3.2
 	golang.org/x/net v0.0.0-20211112202133-69e39bad7dc2
 	golang.org/x/text v0.3.7
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0

@@ -106,7 +106,7 @@ type Extractor struct {
 	// we need to close all data channel while pausing task runner. and these data channel will be recreate when restart the runner.
 	// to avoid writing closed channel, we need to wait for all goroutines that deal with data channels finishing. wg is used for the waiting.
 	wg         sync.WaitGroup
-	targetGtid string
+	targetGtid string // 没卵用
 	RevApplier *Applier
 }
 
@@ -352,12 +352,13 @@ func (e *Extractor) Run() {
 	if e.mysqlContext.SkipIncrementalCopy {
 		e.logger.Info("SkipIncrementalCopy")
 	} else {
-		err := <-e.streamerReadyCh
+		err := <-e.streamerReadyCh // binlogReader完成StartSync后解除此阻塞
 		if err != nil {
 			e.logger.Error("error after streamerReadyCh", "err", err)
 			e.onError(common.TaskStateDead, err)
 			return
 		}
+		// go 接收e.binlogReader的binlog信号并推到nats
 		if err := e.initiateStreaming(); err != nil {
 			e.logger.Error("error at initiateStreaming", "err", err)
 			e.onError(common.TaskStateDead, err)
@@ -700,7 +701,7 @@ func (e *Extractor) initiateStreaming() error {
 	go func() {
 		e.wg.Done()
 		e.logger.Info("Beginning streaming")
-		err := e.StreamEvents()
+		err := e.StreamEvents() // 接收e.binlogReader的binlog信号并推到nats
 		if err != nil {
 			e.onError(common.TaskStateDead, err)
 		}
@@ -713,7 +714,7 @@ func (e *Extractor) initiateStreaming() error {
 	return nil
 }
 
-//--EventsStreamer--
+// --EventsStreamer--
 func (e *Extractor) initDBConnections() (err error) {
 	eventsStreamerUri := e.mysqlContext.SrcConnectionConfig.GetDBUri()
 	if e.db, err = sql.CreateDB(eventsStreamerUri); err != nil {
@@ -802,6 +803,7 @@ func (e *Extractor) getSchemaTablesAndMeta(queryable sql.QueryAble) error {
 	return nil
 }
 
+// newBinlogReader然后放e.binlogReader
 // initBinlogReader creates and connects the reader: we hook up to a MySQL server as a replica
 // Cooperate with `initiateStreaming()` using `e.streamerReadyCh`. Any err will be sent thru the chan.
 func (e *Extractor) initBinlogReader(binlogCoordinates *common.MySQLCoordinates) {
@@ -815,6 +817,7 @@ func (e *Extractor) initBinlogReader(binlogCoordinates *common.MySQLCoordinates)
 	e.binlogReader = binlogReader
 
 	go func() {
+		// StartSync
 		err = binlogReader.ConnectBinlogStreamer(*binlogCoordinates)
 		if err != nil {
 			e.streamerReadyCh <- err
@@ -824,6 +827,7 @@ func (e *Extractor) initBinlogReader(binlogCoordinates *common.MySQLCoordinates)
 	}()
 }
 
+// 查完后放 e.sqlMode
 func (e *Extractor) selectSqlMode() error {
 	query := `select @@sql_mode`
 	if err := e.db.QueryRow(query).Scan(&e.sqlMode); err != nil {
@@ -832,6 +836,7 @@ func (e *Extractor) selectSqlMode() error {
 	return nil
 }
 
+// coord数据来自 e.mysqlContext
 func (e *Extractor) setInitialBinlogCoordinates() error {
 	if e.mysqlContext.Gtid != "" {
 		gtidSet, err := gomysql.ParseMysqlGTIDSet(e.mysqlContext.Gtid)
@@ -855,6 +860,7 @@ func (e *Extractor) setInitialBinlogCoordinates() error {
 	return nil
 }
 
+// Innodb的information_schema.tables的行数是不准的
 // CountTableRows counts exact number of rows on the original table
 func (e *Extractor) CountTableRows(db sql.QueryAble, table *common.Table) (int64, error) {
 	//e.logger.Debug("As instructed, I'm issuing a SELECT COUNT(*) on the table. This may take a while")
@@ -876,6 +882,7 @@ func (e *Extractor) CountTableRows(db sql.QueryAble, table *common.Table) (int64
 	return rowsEstimate, nil
 }
 
+// 读取后保存指 e.systemVariables
 // Read the MySQL charset-related system variables.
 func (e *Extractor) readMySqlCharsetSystemVariables() error {
 	query := `show variables where Variable_name IN ('character_set_server','collation_server')`
@@ -1067,7 +1074,7 @@ func (e *Extractor) StreamEvents() error {
 	return nil
 }
 
-
+// 将binlog推到nats
 // retryOperation attempts up to `count` attempts at running given function,
 // exiting as soon as it returns with non-error.
 // gno: only for logging
@@ -1145,7 +1152,8 @@ func (e *Extractor) sendSysVarAndSqlMode() error {
 	return nil
 }
 
-//Perform the snapshot using the same logic as the "mysqldump" utility.
+// 全量同步才用到
+// Perform the snapshot using the same logic as the "mysqldump" utility.
 func (e *Extractor) mysqlDump() (err error) {
 	defer e.singletonDB.Close()
 	var tx sql.QueryAble
@@ -1423,6 +1431,7 @@ func (e *Extractor) mysqlDump() (err error) {
 	return nil
 }
 
+// 全量同步才用到
 func (e *Extractor) handleDumpTable(db sql.QueryAble, t *common.Table) (err error) {
 	d := NewDumper(e.ctx, db, t, e.mysqlContext.ChunkSize, e.logger.ResetNamed("dumper"), e.memory1,
 		e.mysqlContext.DumpEntryLimit)
@@ -1472,6 +1481,7 @@ func (e *Extractor) encodeAndSendDumpEntry(entry *common.DumpEntry) error {
 	return nil
 }
 
+// 统计
 func (e *Extractor) Stats() (*common.TaskStatistics, error) {
 	totalRowsCopied := atomic.LoadInt64(&e.TotalRowsCopied)
 	rowsEstimate := atomic.LoadInt64(&e.mysqlContext.RowsEstimate)
@@ -1578,6 +1588,7 @@ func (e *Extractor) onError(state int, err error) {
 	})
 	_ = e.Shutdown()
 }
+
 // Shutdown is used to tear down the extractor
 func (e *Extractor) Shutdown() error {
 	e.logger.Debug("extractor shutdown")
@@ -1649,6 +1660,7 @@ func (e *Extractor) sendFullComplete() (err error) {
 	return nil
 }
 
+// 处理finish信号, 保存这下源端当前的gtid
 func (e *Extractor) Finish1() (err error) {
 	// TODO shutdown job on error
 
@@ -1670,6 +1682,7 @@ func (e *Extractor) Finish1() (err error) {
 		return errors.Wrap(err, "PutTargetGtid")
 	}
 
+	// 意义不明
 	err = e.binlogReader.SetTargetGtid(e.targetGtid)
 	if err != nil {
 		return errors.Wrap(err, "afterGetTargetGtid")

@@ -1020,14 +1020,7 @@ func buildSrcTaskDetail(taskName string, internalTaskConfig common.DtleTaskConfi
 	}
 
 	connectionConfig := new(models.DatabaseConnectionConfig)
-	if internalTaskConfig.SrcOracleConfig != nil {
-		connectionConfig.DatabaseType = "Oracle"
-		connectionConfig.Host = internalTaskConfig.SrcOracleConfig.Host
-		connectionConfig.Port = internalTaskConfig.SrcOracleConfig.Port
-		connectionConfig.User = internalTaskConfig.SrcOracleConfig.User
-		connectionConfig.Password = internalTaskConfig.SrcOracleConfig.Password
-		connectionConfig.ServiceName = internalTaskConfig.SrcOracleConfig.ServiceName
-	} else if internalTaskConfig.SrcConnectionConfig != nil {
+	if internalTaskConfig.SrcConnectionConfig != nil {
 		connectionConfig.DatabaseType = "MySQL"
 		connectionConfig.Host = internalTaskConfig.SrcConnectionConfig.Host
 		connectionConfig.Port = internalTaskConfig.SrcConnectionConfig.Port
@@ -1825,6 +1818,7 @@ func ReverseStartSyncJobV2(c echo.Context) error {
 	return ReverseStartJobV2(c, DtleJobTypeSync)
 }
 
+// 写作ReverseStart其实就是Finish
 // @Summary start reverse-init job
 // @Id ReverseStartJobV2
 // @Tags job

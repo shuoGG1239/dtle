@@ -343,12 +343,8 @@ func (a *Applier) Run() {
 	}
 
 	var sourceType string
-	if a.mysqlContext.SrcOracleConfig != nil {
-		sourceType = "oracle"
-	} else {
-		sourceType = "mysql"
-		a.prepareGTID()
-	}
+	sourceType = "mysql"
+	a.prepareGTID()
 
 	//a.logger.Debug("the connectionconfi host is ",a.mysqlContext.ConnectionConfig.Host)
 	//	a.logger.Info("Apply binlog events to %s.%d", a.mysqlContext.ConnectionConfig.Host, a.mysqlContext.ConnectionConfig.Port)
@@ -364,14 +360,6 @@ func (a *Applier) Run() {
 	}
 	a.ai.fwdExtractor = a.fwdExtractor
 	a.ai.EntryExecutedHook = func(entry *common.DataEntry) {
-		if a.ai.sourceType == "oracle" {
-			err = a.storeManager.SaveOracleSCNPos(a.subject, entry.Coordinates.GetLogPos(), entry.Coordinates.GetLastCommit())
-			if err != nil {
-				a.onError(common.TaskStateDead, errors.Wrap(err, "SaveOracleSCNPos"))
-			}
-			return
-		}
-
 		if entry.Final {
 			a.gtidCh <- entry.Coordinates
 		}

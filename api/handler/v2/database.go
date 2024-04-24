@@ -1,13 +1,11 @@
 package v2
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/actiontech/dtle/driver/mysql/mysqlconfig"
-	"github.com/actiontech/dtle/driver/oracle/config"
 
 	"github.com/hashicorp/go-hclog"
 
@@ -55,11 +53,6 @@ func ListDatabaseSchemasV2(c echo.Context) error {
 		replicateDoDb, err = listMySQLSchema(logger, reqParam)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, models.BuildBaseResp(fmt.Errorf("list %s schema failed : %v", DB_TYPE_MYSQL, err)))
-		}
-	case DB_TYPE_ORACLE:
-		replicateDoDb, err = listOracleSchema(logger, reqParam)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, models.BuildBaseResp(fmt.Errorf("list %s schema failed : %v", DB_TYPE_ORACLE, err)))
 		}
 	}
 
@@ -116,56 +109,6 @@ func listMySQLSchema(logger hclog.Logger, reqParam *models.ListDatabaseSchemasRe
 	return replicateDoDb, nil
 }
 
-func listOracleSchema(logger hclog.Logger, reqParam *models.ListDatabaseSchemasReqV2) ([]*models.SchemaItem, error) {
-	if reqParam.IsPasswordEncrypted && reqParam.Password != "" {
-		realPwd, err := handler.DecryptPassword(reqParam.Password, g.RsaPrivateKey)
-		if nil != err {
-			return nil, err
-		}
-		reqParam.Password = realPwd
-	}
-	oracleDb, err := config.NewDB(context.TODO(), &config.OracleConfig{
-		User:        reqParam.User,
-		Password:    reqParam.Password,
-		Host:        reqParam.Host,
-		Port:        reqParam.Port,
-		ServiceName: reqParam.ServiceName,
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer oracleDb.Close()
-
-	logger.Info("get schemas and tables from oracle")
-
-	schemas, err := oracleDb.GetSchemas()
-	if err != nil {
-		return nil, fmt.Errorf("get oracle schemas err : %v", err)
-	}
-	replicateDoDb := make([]*models.SchemaItem, 0)
-	for _, schema := range schemas {
-		tableNames, err := oracleDb.GetTables(schema)
-		if err != nil {
-			return nil, fmt.Errorf("get oracle schema %v tables failed: %v", schema, err)
-		}
-		tables := []*models.TableItem{}
-		for _, tableName := range tableNames {
-			tb := &models.TableItem{
-				TableName: tableName,
-			}
-			tables = append(tables, tb)
-		}
-
-		schema := &models.SchemaItem{
-			SchemaName: schema,
-			Tables:     tables,
-		}
-		replicateDoDb = append(replicateDoDb, schema)
-	}
-	return replicateDoDb, nil
-
-}
-
 // @Id ListDatabaseColumnsV2
 // @Description list columns of database source instance.
 // @Tags database
@@ -196,31 +139,6 @@ func ListDatabaseColumnsV2(c echo.Context) error {
 		columns, err = listMySQLColumns(logger, reqParam)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, models.BuildBaseResp(fmt.Errorf("list %s columns failed : %v", DB_TYPE_MYSQL, err)))
-		}
-	case DB_TYPE_ORACLE:
-		if reqParam.IsPasswordEncrypted && reqParam.Password != "" {
-			realPwd, err := handler.DecryptPassword(reqParam.Password, g.RsaPrivateKey)
-			if nil != err {
-				return c.JSON(http.StatusOK, &models.ConnectionRespV2{
-					BaseResp: models.BuildBaseResp(err),
-				})
-			}
-			reqParam.Password = realPwd
-		}
-		oracleDb, err := config.NewDB(context.TODO(), &config.OracleConfig{
-			User:        reqParam.User,
-			Password:    reqParam.Password,
-			Host:        reqParam.Host,
-			Port:        reqParam.Port,
-			ServiceName: reqParam.ServiceName,
-		})
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, models.BuildBaseResp(fmt.Errorf("list %s columns failed : %v", DB_TYPE_ORACLE, err)))
-		}
-		defer oracleDb.Close()
-		columns, err = oracleDb.GetColumns(reqParam.Schema, reqParam.Table)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, models.BuildBaseResp(fmt.Errorf("list %s columns failed : %v", DB_TYPE_ORACLE, err)))
 		}
 	}
 
@@ -316,21 +234,6 @@ func connectDatabase(reqParam *models.ConnectionReqV2) error {
 			return fmt.Errorf("build database Uri failed: %v", err)
 		}
 		db, err = sql.CreateDB(uri)
-	case DB_TYPE_ORACLE:
-		if reqParam.IsPasswordEncrypted && reqParam.Password != "" {
-			realPwd, err := handler.DecryptPassword(reqParam.Password, g.RsaPrivateKey)
-			if nil != err {
-				return err
-			}
-			reqParam.Password = realPwd
-		}
-		db, err = config.OpenDb(&config.OracleConfig{
-			User:        reqParam.User,
-			Password:    reqParam.Password,
-			Host:        reqParam.Host,
-			Port:        reqParam.Port,
-			ServiceName: reqParam.ServiceName,
-		})
 	default:
 		return fmt.Errorf("data type %v is unsupport", reqParam.DatabaseType)
 	}
@@ -347,4 +250,3 @@ func connectDatabase(reqParam *models.ConnectionReqV2) error {
 
 	return nil
 }
-

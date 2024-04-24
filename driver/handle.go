@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/actiontech/dtle/driver/oracle/extractor"
-
 	"github.com/actiontech/dtle/g"
 
 	"github.com/actiontech/dtle/driver/common"
@@ -192,13 +190,7 @@ func (h *taskHandle) NewRunner(d *Driver) (runner DriverHandle, err error) {
 
 	switch common.TaskTypeFromString(h.taskConfig.Name) {
 	case common.TaskTypeSrc:
-		if h.driverConfig.SrcOracleConfig != nil {
-			h.logger.Debug("found oracle src", "SrcOracleConfig", h.driverConfig.SrcOracleConfig)
-			runner, err = extractor.NewExtractorOracle(ctx, h.driverConfig, logger, d.storeManager, h.waitCh, h.ctx)
-			if err != nil {
-				return nil, errors.Wrap(err, "NewExtractor")
-			}
-		} else {
+		{
 			e, err := mysql.NewExtractor(ctx, h.driverConfig, logger, d.storeManager, h.waitCh, h.ctx)
 			if err != nil {
 				return nil, errors.Wrap(err, "NewOracleExtractor")

@@ -288,6 +288,7 @@ func (b *BinlogReader) ConnectBinlogStreamer(coordinates common.MySQLCoordinates
 	b.logger.Info("Connecting binlog streamer",
 		"file", coordinates.LogFile, "pos", coordinates.LogPos, "gtid", coordinates.GtidSet)
 
+	// binlog中继不管
 	if b.mysqlContext.BinlogRelay {
 		dbConfig := dmconfig.DBConfig{
 			Host:     b.mysqlContext.SrcConnectionConfig.Host,
@@ -388,7 +389,7 @@ func (b *BinlogReader) ConnectBinlogStreamer(coordinates common.MySQLCoordinates
 		// Start sync with sepcified binlog gtid
 		//	b.logger.WithField("coordinate", coordinates).Debugf("will start sync")
 		b.logger.Debug("will start sync coordinate", "coordinates", coordinates)
-		if coordinates.GtidSet == "" {
+		if coordinates.GtidSet == "" { // 没gtid直接用File&Pos
 			b.binlogStreamer0, err = b.binlogSyncer.StartSync(
 				gomysql.Position{Name: coordinates.LogFile, Pos: uint32(coordinates.LogPos)})
 			b.binlogStreamer = b.binlogStreamer0

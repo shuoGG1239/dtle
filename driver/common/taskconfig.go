@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/actiontech/dtle/driver/mysql/mysqlconfig"
-	"github.com/actiontech/dtle/driver/oracle/config"
 )
 
 const (
@@ -77,8 +76,6 @@ type DtleTaskConfig struct {
 	DestConnectionConfig *mysqlconfig.ConnectionConfig `codec:"DestConnectionConfig"`
 	KafkaConfig          *KafkaConfig                  `codec:"KafkaConfig"`
 	DestType             string                        `codec:"DestType"`
-	// support oracle extractor/applier
-	SrcOracleConfig *config.OracleConfig `codec:"SrcOracleConfig"`
 }
 
 func (d *DtleTaskConfig) SetDefaultForEmpty() {
