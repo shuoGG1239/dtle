@@ -5,7 +5,6 @@ import (
 	gosql "database/sql"
 	"encoding/binary"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,8 +29,8 @@ type ApplierIncr struct {
 	subject      string
 	mysqlContext *common.MySQLDriverConfig
 
-	incrBytesQueue   chan []byte
-	binlogEntryQueue chan *common.DataEntry
+	incrBytesQueue   chan []byte // nats里的binlog消息队列(raw bytes)
+	binlogEntryQueue chan *common.DataEntry // nats里的binlog消息队列, 消息直接取自incrBytesQueue并解析
 	// only TX can be executed should be put into this chan
 	applyBinlogMtsTxQueue chan *common.EntryContext
 
@@ -76,7 +75,7 @@ type ApplierIncr struct {
 	bigTxEventQueue chan *dmlExecItem
 	bigTxEventWg    sync.WaitGroup
 
-	fwdExtractor *Extractor
+	fwdExtractor *Extractor // 仅仅用来防回环, 其实不用也不会回环, 双重保证?
 }
 
 func NewApplierIncr(applier *Applier, sourcetype string) (*ApplierIncr, error) {
@@ -175,6 +174,7 @@ func (a *ApplierIncr) Run() (err error) {
 
 	go a.timestampCtx.Handle()
 
+	// 核心: handle entry
 	go a.heterogeneousReplay()
 
 	if a.printTps {
@@ -261,6 +261,7 @@ func (a *ApplierIncr) MtsWorker(workerIndex int) {
 	}
 }
 
+// 处理来自nats的binlog
 func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 	binlogEntry := entryCtx.Entry
 	txGno := binlogEntry.Coordinates.GetGNO()
@@ -268,12 +269,8 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 		"lc", binlogEntry.Coordinates.GetLastCommit(), "seq", binlogEntry.Coordinates.GetSequenceNumber(),
 		"index", binlogEntry.Index, "final", binlogEntry.Final)
 
-	if binlogEntry.Coordinates.GetSid() == uuid.UUID([16]byte{0}) {
-		return a.handleEntryOracle(entryCtx)
-	}
-
 	isBig := binlogEntry.IsPartOfBigTx()
-	txSid := binlogEntry.Coordinates.GetSidStr()
+	txSid := binlogEntry.Coordinates.GetSidStr() // src serverId
 
 	if a.inBigTx && binlogEntry.Index == 0 {
 		a.logger.Info("bigtx: found resent BinlogEntry", "gno", txGno)
@@ -289,10 +286,10 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 
 	// region TestIfExecuted
 	skipEntry := false
-	if txSid == a.MySQLServerUuid {
+	if txSid == a.MySQLServerUuid { // 防回环, 过滤掉和自己一样的sid
 		a.logger.Debug("skipping a binlogEntry with the same sid as target.", "sid", txSid)
 		skipEntry = true
-	} else if a.fwdExtractor != nil {
+	} else if a.fwdExtractor != nil { // 也是防回环, 其实意义不大, 有上面那条规则就够了.
 		if a.fwdExtractor.binlogReader != nil {
 			if base.GtidSetContains(&a.fwdExtractor.binlogReader.CurrentGtidSetMutex,
 				a.fwdExtractor.binlogReader.CurrentGtidSet, txSid, txGno) {
@@ -342,6 +339,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 		if err != nil {
 			return err
 		}
+		// 回放binlog
 		if err := a.ApplyBinlogEvent(0, entryCtx); err != nil {
 			return err
 		}
@@ -425,6 +423,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 	return nil
 }
 
+// ApplierIncr.Run的核心: 接收来自nats的Binlog(a.incrBytesQueue), 解析后丢进 a.binlogEntryQueue, 取出后handleEntry
 func (a *ApplierIncr) heterogeneousReplay() {
 	a.wg.Add(1)
 	defer a.wg.Done()
@@ -926,21 +925,6 @@ func (a *ApplierIncr) setTableItemForBinlogEntry(binlogEntry *common.EntryContex
 			}
 			binlogEntry.TableItems[i] = tableItem
 		}
-	}
-	return nil
-}
-
-func (a *ApplierIncr) handleEntryOracle(entryCtx *common.EntryContext) (err error) {
-	err = a.setTableItemForBinlogEntry(entryCtx)
-	if err != nil {
-		return err
-	}
-	if err := a.ApplyBinlogEvent(0, entryCtx); err != nil {
-		if os.Getenv("SkipErr") == "true" {
-			a.logger.Error("skip : apply binlog event err", "err", err, "entryCtx", entryCtx)
-			return nil
-		}
-		return err
 	}
 	return nil
 }

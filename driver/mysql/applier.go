@@ -277,16 +277,19 @@ func (a *Applier) prepareGTID() {
 func (a *Applier) Run() {
 	var err error
 
+	// 连接nats放在a.natsConn
 	a.logger.Debug("initNatSubClient")
 	if err := a.initNatSubClient(); err != nil {
 		a.onError(common.TaskStateDead, err)
 		return
 	}
+	// 核心, 监听extractor推送的Binlog等
 	a.logger.Debug("subscribeNats")
 	if err := a.subscribeNats(); err != nil {
 		a.onError(common.TaskStateDead, err)
 		return
 	}
+	// 写natsAddr, extractor初始化时会来获取
 	err = a.storeManager.DstPutNats(a.subject, a.NatsAddr, a.shutdownCh, func(err error) {
 		a.onError(common.TaskStateDead, errors.Wrap(err, "DstPutNats"))
 	})
@@ -295,6 +298,7 @@ func (a *Applier) Run() {
 		return
 	}
 
+	// 来自extractor初始化时的PutConfig
 	a.mysqlContext, err = a.storeManager.GetConfig(a.subject)
 	if err != nil {
 		a.onError(common.TaskStateDead, errors.Wrap(err, "GetConfig"))
@@ -641,6 +645,7 @@ func (a *Applier) subscribeNats() (err error) {
 	_, err = a.natsConn.Subscribe(fmt.Sprintf("%s_incr_hete", a.subject), func(m *gonats.Msg) {
 		a.logger.Debug("incr. recv a msg.")
 
+		// 将nats里的binlog消息放到incrNMM
 		segmentFinished, err := incrNMM.Handle(m.Data)
 		if err != nil {
 			a.onError(common.TaskStateDead, errors.Wrap(err, "incrNMM.Handle"))
@@ -654,7 +659,7 @@ func (a *Applier) subscribeNats() (err error) {
 			}
 			a.logger.Debug("incr. after publish nats reply.")
 		} else {
-			bs := incrNMM.GetBytes()
+			bs := incrNMM.GetBytes() // binlog消息
 			select {
 			case <-a.shutdownCh:
 				return
@@ -663,7 +668,7 @@ func (a *Applier) subscribeNats() (err error) {
 				incrNMM.Reset()
 
 				a.logger.Debug("incr. incrBytesQueue enqueued", "vacancy", cap(a.ai.incrBytesQueue)-len(a.ai.incrBytesQueue))
-
+				// nats应答
 				if err := a.natsConn.Publish(m.Reply, nil); err != nil {
 					a.onError(common.TaskStateDead, err)
 					return

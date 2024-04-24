@@ -196,6 +196,7 @@ func (e *Extractor) Run() {
 		e.logger.Info("after WaitOnJob", "job2", e.mysqlContext.WaitOnJob, "firstWait", firstWait)
 	}
 
+	// applier初始化时会来获取
 	// PutConfig before WatchNats
 	err = e.storeManager.PutConfig(e.subject, e.mysqlContext)
 	if err != nil {
@@ -988,6 +989,7 @@ func (tsc *TimestampContext) Handle() {
 	}
 }
 
+// 推送binlog到topic {subject}_incr_hete
 // StreamEvents will begin streaming events. It will be blocking, so should be
 // executed by a goroutine
 func (e *Extractor) StreamEvents() error {
