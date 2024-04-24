@@ -368,6 +368,7 @@ func (sm *StoreManager) SaveJobInfo(job JobListItemV2) error {
 	return err
 }
 
+// 等待waitJob为finished
 func (sm *StoreManager) WaitOnJob(currentJob string, waitJob string, stopCh chan struct{}) error {
 	waitCh := make(chan struct{}, 0)
 	defer close(waitCh)

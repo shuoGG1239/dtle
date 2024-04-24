@@ -161,6 +161,7 @@ func (e *Extractor) Run() {
 	}
 
 	{
+		// targetGtid目前没看到有啥用
 		target, err := e.storeManager.GetTargetGtid(e.subject)
 		if err != nil {
 			e.onError(common.TaskStateDead, err)
@@ -170,6 +171,7 @@ func (e *Extractor) Run() {
 
 	}
 
+	// 等待WaitOnJob执行finished再继续流程
 	if e.mysqlContext.WaitOnJob != "" {
 		jobStatus, err := e.storeManager.GetJobStatus(e.subject)
 		if err != nil {
@@ -201,6 +203,7 @@ func (e *Extractor) Run() {
 		return
 	}
 
+	// 从consul读取natsAddr, natsAddr是在applier端写入到consul的
 	e.natsAddr, err = e.storeManager.SrcWatchNats(e.subject, e.shutdownCh, func(err error) {
 		e.onError(common.TaskStateDead, err)
 	})
@@ -214,6 +217,7 @@ func (e *Extractor) Run() {
 		go e.RevApplier.Run()
 	}
 
+	// 从consul读取然后放在e.mysqlContext; 至于什么时候SaveGtidForJob: applier和extractor都有
 	err = common.GetGtidFromConsul(e.storeManager, e.subject, e.logger, e.mysqlContext)
 	if err != nil {
 		e.onError(common.TaskStateDead, errors.Wrap(err, "GetGtidFromConsul"))
@@ -230,17 +234,22 @@ func (e *Extractor) Run() {
 			return
 		}
 	}*/
+
+	// 检查各种配置如是否开启binlog和gtid
 	e.logger.Info("initiateInspector")
 	if err := e.initiateInspector(); err != nil {
 		e.onError(common.TaskStateDead, err)
 		return
 	}
+
+	// 初始化nats, 放在e.natsConn
 	e.logger.Info("initNatsPubClient")
 	if err := e.initNatsPubClient(e.natsAddr); err != nil {
 		e.onError(common.TaskStateDead, err)
 		return
 	}
 
+	// 连接源db, 放e.db和e.singletonDB: 前者用于读binlog, 后者用于全量dump
 	e.logger.Info("initDBConnections")
 	if err := e.initDBConnections(); err != nil {
 		e.logger.Error("initiateInspector error", "err", err)
@@ -252,6 +261,7 @@ func (e *Extractor) Run() {
 
 	fullCopy := true
 
+	// 最终都会赋值给e.mysqlContext.Gtid
 	if e.mysqlContext.Gtid != "" {
 		fullCopy = false
 	} else if e.mysqlContext.AutoGtid {
@@ -292,6 +302,7 @@ func (e *Extractor) Run() {
 		}
 	}
 
+	// 读取源端的variables推到nats
 	if err := e.sendSysVarAndSqlMode(); err != nil {
 		e.onError(common.TaskStateDead, err)
 		return
@@ -300,7 +311,7 @@ func (e *Extractor) Run() {
 
 	go e.timestampCtx.Handle()
 	go func() {
-		<-e.gotCoordinateCh
+		<-e.gotCoordinateCh // 发送端就在下面
 
 		if e.mysqlContext.SkipIncrementalCopy {
 			e.logger.Warn("SkipIncrementalCopy is true. Make sure it is intended.")
@@ -311,6 +322,7 @@ func (e *Extractor) Run() {
 				<-e.fullCopyDone
 			}
 			e.logger.Info("initBinlogReader")
+			// 初始化完成后 e.streamerReadyCh<-nil
 			e.initBinlogReader(e.initialBinlogCoordinates)
 		}
 	}()
@@ -334,16 +346,18 @@ func (e *Extractor) Run() {
 			e.onError(common.TaskStateDead, err)
 			return
 		}
+		// 从e.mysqlContext 读取后放在e.initialBinlogCoordinates
 		if err := e.setInitialBinlogCoordinates(); err != nil {
 			e.onError(common.TaskStateDead, err)
 			return
 		}
+		// 将e.initialBinlogCoordinates发给nats, applier会接受处理
 		err = e.sendFullComplete()
 		if err != nil {
 			e.onError(common.TaskStateDead, errors.Wrap(err, "sendFullComplete"))
 			return
 		}
-		e.gotCoordinateCh <- struct{}{}
+		e.gotCoordinateCh <- struct{}{} // 后面开始e.initBinlogReader准备增量
 	}
 	if !e.mysqlContext.BinlogRelay {
 		e.fullCopyDone <- struct{}{}
