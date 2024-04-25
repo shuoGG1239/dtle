@@ -60,7 +60,7 @@ type Applier struct {
 	lowerCaseTableNames umconf.LowerCaseTableNamesValue
 	TotalRowsReplayed   int64
 
-	dbs []*sql.Conn
+	dbs []*sql.Conn // ParallelWorkers相关, 并行所以有多个连接 (不是连接池, 是数据库连接)
 	db  *gosql.DB
 
 	rowCopyComplete chan struct{}
@@ -721,6 +721,8 @@ func (a *Applier) InitDB() (err error) {
 	return nil
 }
 
+// 1. 根据a.mysqlContext.DestConnectionConfig创建连接池 a.db, 并从a.db创建ParallelWorkers条单连接到a.dbs
+// 2. 校验grant
 func (a *Applier) initDBConnections() (err error) {
 	if err := a.InitDB(); nil != err {
 		return err
@@ -767,8 +769,8 @@ func (a *Applier) ValidateConnection() error {
 	return nil
 }
 
-// ValidateGrants verifies the user by which we're executing has necessary grants
-// to do its thang.
+// 要有super 或 db all
+// ValidateGrants verifies the user by which we're executing has necessary grants to do its thang.
 func (a *Applier) ValidateGrants() error {
 	if a.mysqlContext.SkipPrivilegeCheck {
 		a.logger.Debug("skipping priv check")
@@ -976,6 +978,7 @@ func (a *Applier) ApplyEventQueries(entry *common.DumpEntry) (err error) {
 	return nil
 }
 
+// 统计
 func (a *Applier) Stats() (*common.TaskStatistics, error) {
 	a.logger.Debug("Stats")
 	var totalDeltaCopied int64
@@ -1157,6 +1160,7 @@ func (a *Applier) Shutdown() error {
 	return nil
 }
 
+// a.targetGtid没啥卵用
 func (a *Applier) watchTargetGtid() {
 	target, err := a.storeManager.WatchTargetGtid(a.subject, a.shutdownCh)
 	if err != nil {

@@ -396,6 +396,7 @@ func (e *Extractor) initiateInspector() (err error) {
 	return nil
 }
 
+// show table, show create table xxx; 结果放 e.tableSpecs, e.replicateDoDb
 func (e *Extractor) inspectTables(db sql.QueryAble) (err error) {
 	// Creates a MYSQL Dump based on the options supplied through the dumper.
 	dbsExisted, err := sql.ShowDatabases(db)

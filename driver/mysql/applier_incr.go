@@ -29,7 +29,7 @@ type ApplierIncr struct {
 	subject      string
 	mysqlContext *common.MySQLDriverConfig
 
-	incrBytesQueue   chan []byte // nats里的binlog消息队列(raw bytes)
+	incrBytesQueue   chan []byte            // nats里的binlog消息队列(raw bytes)
 	binlogEntryQueue chan *common.DataEntry // nats里的binlog消息队列, 消息直接取自incrBytesQueue并解析
 	// only TX can be executed should be put into this chan
 	applyBinlogMtsTxQueue chan *common.EntryContext
@@ -344,7 +344,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 			return err
 		}
 	} else {
-		if binlogEntry.Index == 0 {
+		if binlogEntry.Index == 0 { // index 0 rotate
 			if rotated {
 				if !a.mtsManager.WaitForAllCommitted(a.logger.With("rotate", a.replayingBinlogFile)) {
 					return nil // TODO shutdown
@@ -494,11 +494,14 @@ func (a *ApplierIncr) HasShutdown() bool {
 		return false
 	}
 }
+
+// 有uk则走prepare+exec, 否则直接执行
 func (a *ApplierIncr) prepareIfNilAndExecute(item *dmlExecItem, workerIdx int) (err error) {
 	// hasUK bool, pstmt **gosql.Stmt, query string, args []interface{}
 	var r gosql.Result
 
-	if item.hasUK {
+	// 为啥有uk就走prepare+exec?
+	if item.hasUK { // 有pk 或 insert
 		if *item.pstmt == nil {
 			a.logger.Debug("buildDMLEventQuery prepare query", "query", item.query)
 			*item.pstmt, err = a.dbs[workerIdx].Db.PrepareContext(a.ctx, item.query)
@@ -527,6 +530,7 @@ func (a *ApplierIncr) prepareIfNilAndExecute(item *dmlExecItem, workerIdx int) (
 	return nil
 }
 
+// 核心: 回放binlog
 // ApplyEventQueries applies multiple DML queries onto the dest table
 func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.EntryContext) (err error) {
 	logger := a.logger.Named("ApplyBinlogEvent")
@@ -542,6 +546,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 	dbApplier.DbMutex.Lock()
 	defer dbApplier.DbMutex.Unlock()
 
+	// 核心: set gtid_next (都是session级别,不用担心)
 	// Note: gtid_next cannot be set when there is an ongoing transaction.
 	if a.mysqlContext.SetGtidNext {
 		_, err = dbApplier.Db.ExecContext(a.ctx, fmt.Sprintf("set gtid_next = '%v:%v' /*dtle*/",
@@ -554,6 +559,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 			if err != nil {
 				return
 			}
+			// set gtid_next = 'automatic'
 			err1 := dbApplier.SetGtidNextAutomatic(a.ctx)
 			if err1 != nil {
 				err = errors.Wrapf(err1, "restore gtid_next")
@@ -568,6 +574,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 		}
 	}
 
+	// func: 直接执行query
 	execQuery := func(query string) error {
 		a.logger.Debug("execQuery", "query", query)
 		_, err = dbApplier.Db.ExecContext(a.ctx, query)
@@ -585,6 +592,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 		return nil
 	}
 
+	// func: 大事务放queue, 否则直接exec 或 prepare&exec(有uk时)
 	queueOrExec := func(item *dmlExecItem) error {
 		// TODO check if shutdown?
 		if a.inBigTx && !a.noBigTxDMLPipe {
@@ -600,6 +608,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 		}
 	}
 
+	// 遍历回放每个Binlog
 	for i, event := range binlogEntry.Events {
 		if a.HasShutdown() {
 			break
@@ -610,6 +619,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 			var err error
 			logger.Debug("not dml", "query", event.Query)
 
+			// create if not exists
 			if event.DtleFlags&common.DtleFlagCreateSchemaIfNotExists != 0 {
 				// TODO CHARACTER SET & COLLATE
 				query := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", mysqlconfig.EscapeName(event.DatabaseName))
@@ -619,6 +629,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 				}
 			}
 
+			// use event.CurrentSchema
 			if event.CurrentSchema != "" {
 				query := fmt.Sprintf("USE %s", mysqlconfig.EscapeName(event.CurrentSchema))
 				err := execQuery(query)
@@ -688,6 +699,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 				}
 			}
 
+			// 表结构信息取自extractor的_full_complete 事件(tableSpecs), 纯增量也会有这个事件, 只不过skip了全量直接发信号
 			tableItem := binlogEntryCtx.TableItems[i]
 
 			switch event.DML {
@@ -744,14 +756,14 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 					}
 				}
 			case common.UpdateDML:
-				if len(event.Rows) % 2 != 0 {
+				if len(event.Rows)%2 != 0 {
 					return fmt.Errorf("bad update event. row number is not 2N %v gno %v",
 						len(event.Rows), gno)
 				}
 				binlogEntryCtx.Rows += len(event.Rows) / 2
 				for i := 0; i < len(event.Rows); i += 2 {
 					rowBefore := event.Rows[i]
-					rowAfter  := event.Rows[i+1]
+					rowAfter := event.Rows[i+1]
 
 					if len(rowBefore) == 0 && len(rowAfter) == 0 {
 						return fmt.Errorf("bad update event. row number is not 2N %v gno %v",
@@ -936,9 +948,9 @@ func (a *ApplierIncr) Shutdown() {
 }
 
 type dmlExecItem struct {
-	hasUK bool
+	hasUK bool //  hasUniqueKey
 	pstmt **gosql.Stmt
 	query string
-	args []interface{}
-	gno  int64 // for log only
+	args  []interface{}
+	gno   int64 // for log only
 }
