@@ -23,6 +23,7 @@ gtid_set longtext NULL COMMENT 'Meanful when gtid=0. Summary of all GTIDs',
 primary key (job_name, source_uuid, gtid))`,
 	g.DtleSchemaName, g.GtidExecutedTableV4, g.JobNameLenLimit)
 
+// alter table to v3
 func (a *GtidExecutedCreater) migrateGtidExecutedV2toV3() error {
 	a.logger.Info(`migrateGtidExecutedV2toV3 starting`)
 
@@ -62,6 +63,8 @@ func (a *GtidExecutedCreater) migrateGtidExecutedV2toV3() error {
 
 	return nil
 }
+
+// alter table to v4
 func (a *GtidExecutedCreater) migrateGtidExecutedV3toV4() (err error) {
 	a.logger.Info(`migrateGtidExecutedV3toV4 starting`)
 
@@ -148,6 +151,8 @@ func (a *GtidExecutedCreater) migrateGtidExecutedV3toV4() (err error) {
 
 	return nil
 }
+
+// alter table to v4
 func (a *GtidExecutedCreater) migrateGtidExecutedV3atoV4() (err error) {
 	a.logger.Info(`migrateGtidExecutedV3atoV4 starting`)
 
@@ -178,11 +183,24 @@ func (a *GtidExecutedCreater) migrateGtidExecutedV3atoV4() (err error) {
 
 	return nil
 }
+
 type GtidExecutedCreater struct {
-	db *gosql.DB
+	db     *gosql.DB
 	logger g.LoggerType
 }
 
+/*
+建表:
+CREATE TABLE IF NOT EXISTS gtid_executed_v4 (
+
+	job_name varchar(%v) NOT NULL,
+	source_uuid binary(16) NOT NULL COMMENT 'uuid of the source where the transaction was originally executed.',
+	gtid bigint NOT NULL COMMENT 'single TX. 0 means the row is for gtid_set',
+	gtid_set longtext NULL COMMENT 'Meanful when gtid=0. Summary of all GTIDs',
+	primary key (job_name, source_uuid, gtid)
+
+)
+*/
 func (a *GtidExecutedCreater) createTableGtidExecutedV4() error {
 	query := fmt.Sprintf(`
 			CREATE DATABASE IF NOT EXISTS %v;
@@ -245,6 +263,7 @@ func (a *GtidExecutedCreater) createTableGtidExecutedV4() error {
 	}
 }
 
+// 清除已经执行的记录, 执行记录是在哪里insert的? 在这里PsInsertExecutedGtid
 func (a *ApplierIncr) cleanGtidExecuted(sid uuid.UUID, txSid string) error {
 	if !a.mtsManager.WaitForAllCommitted(a.logger.With("txSid", txSid)) {
 		return nil // shutdown
@@ -274,11 +293,13 @@ func (a *ApplierIncr) cleanGtidExecuted(sid uuid.UUID, txSid string) error {
 		}
 	}()
 
+	// delete from gtid_executed_v4 where `job_name` = a.subject and `source_uuid` = txSid
 	_, err = dbApplier.PsDeleteExecutedGtid.Exec(a.subject, g.UUIDStrToMySQLHex(txSid))
 	if err != nil {
 		return err
 	}
 
+	// insert (a.subject, serverId, 0, GetIntervals(a.gtidSet, txSid))
 	a.logger.Debug("compactation gtid. new interval", "intervalStr", intervalStr)
 	_, err = dbApplier.Db.ExecContext(a.ctx,
 		fmt.Sprintf("insert into %v.%v values (?,?,0,?)", g.DtleSchemaName, g.GtidExecutedTableV4),
@@ -315,14 +336,15 @@ func parseInterval(str string) (i mysql.Interval, err error) {
 	return
 }
 
-// return: normalized GtidSet
-func SelectAllGtidExecuted(db sql.QueryAble, jid string, gtidSet *mysql.MysqlGTIDSet) (
+// select by subjectId, 结果都Add到gtidSet
+// itemMap记录每个serverId对应有几行记录, 用于和cleanupGtidExecutedLimit对比, 判断是否cleanGtidExecuted
+func SelectAllGtidExecuted(db sql.QueryAble, subjectId string, gtidSet *mysql.MysqlGTIDSet) (
 	itemMap base.GtidItemMap, err error) {
 
 	query := fmt.Sprintf(`SELECT source_uuid,gtid,gtid_set FROM %v.%v where job_name=?`,
 		g.DtleSchemaName, g.GtidExecutedTableV4)
 
-	rows, err := db.QueryContext(context.TODO(), query, jid)
+	rows, err := db.QueryContext(context.TODO(), query, subjectId)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +365,7 @@ func SelectAllGtidExecuted(db sql.QueryAble, jid string, gtidSet *mysql.MysqlGTI
 		item, ok := itemMap[sidUUID]
 		if !ok {
 			item = &base.GtidItem{
-				NRow:      0,
+				NRow: 0,
 			}
 			itemMap[sidUUID] = item
 		}
@@ -374,4 +396,3 @@ func SelectAllGtidExecuted(db sql.QueryAble, jid string, gtidSet *mysql.MysqlGTI
 
 	return itemMap, err
 }
-

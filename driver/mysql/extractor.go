@@ -218,7 +218,7 @@ func (e *Extractor) Run() {
 		go e.RevApplier.Run()
 	}
 
-	// 从consul读取然后放在e.mysqlContext; 至于什么时候SaveGtidForJob: applier和extractor都有
+	// 从consul读取位点相关数据后放在e.mysqlContext; 至于什么时候SaveGtidForJob: applier和extractor都有
 	err = common.GetGtidFromConsul(e.storeManager, e.subject, e.logger, e.mysqlContext)
 	if err != nil {
 		e.onError(common.TaskStateDead, errors.Wrap(err, "GetGtidFromConsul"))
@@ -352,7 +352,7 @@ func (e *Extractor) Run() {
 			e.onError(common.TaskStateDead, err)
 			return
 		}
-		// 将e.initialBinlogCoordinates发给nats, applier会接受处理
+		// 将e.initialBinlogCoordinates和e.tableSpecs发给nats, applier会接受处理
 		err = e.sendFullComplete()
 		if err != nil {
 			e.onError(common.TaskStateDead, errors.Wrap(err, "sendFullComplete"))

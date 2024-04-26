@@ -126,8 +126,8 @@ type Conn struct {
 	DbMutex *sync.Mutex
 	Db      *gosql.Conn
 
-	PsDeleteExecutedGtid *gosql.Stmt
-	PsInsertExecutedGtid *gosql.Stmt
+	PsDeleteExecutedGtid *gosql.Stmt // 清gtid_executed_v4记录
+	PsInsertExecutedGtid *gosql.Stmt // 加gtid_executed_v4记录
 }
 
 func (c *Conn) SetGtidNextAutomatic(ctx context.Context) (err error) {

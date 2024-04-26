@@ -3336,8 +3336,8 @@ func (d *DataEvent) Unmarshal(buf []byte) (uint64, error) {
 type DataEntry struct {
 	Coordinates CoordinatesI
 	Events      []DataEvent
-	Index       int32
-	Final       bool
+	Index       int32 // 给大事务用的, 非大事务固定是0
+	Final       bool  // 小事务固定true
 }
 
 func (d *DataEntry) Size() (s uint64) {

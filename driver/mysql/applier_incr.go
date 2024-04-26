@@ -133,40 +133,39 @@ func (a *ApplierIncr) Run() (err error) {
 	}
 	a.logger.Info("GetServerUUID", "uuid", a.MySQLServerUuid)
 
-	if a.sourceType == "mysql" {
-		err = (&GtidExecutedCreater{
-			db:     a.db,
-			logger: a.logger,
-		}).createTableGtidExecutedV4()
-		if err != nil {
-			return err
-		}
-		a.logger.Debug("after createTableGtidExecutedV4")
-
-		for i := range a.dbs {
-			a.dbs[i].PsDeleteExecutedGtid, err = a.dbs[i].Db.PrepareContext(a.ctx,
-				fmt.Sprintf("delete from %v.%v where job_name = ? and hex(source_uuid) = ?",
-					g.DtleSchemaName, g.GtidExecutedTableV4))
-			if err != nil {
-				return err
-			}
-			a.dbs[i].PsInsertExecutedGtid, err = a.dbs[i].Db.PrepareContext(a.ctx,
-				fmt.Sprintf("replace into %v.%v (job_name,source_uuid,gtid,gtid_set) values (?, ?, ?, null)",
-					g.DtleSchemaName, g.GtidExecutedTableV4))
-			if err != nil {
-				return err
-			}
-
-		}
-		a.logger.Debug("after prepare stmt for gtid_executed table")
-
-		a.gtidItemMap, err = SelectAllGtidExecuted(a.db, a.subject, a.gtidSet)
-		if err != nil {
-			return err
-		}
-
-		a.logger.Debug("after SelectAllGtidExecuted")
+	err = (&GtidExecutedCreater{
+		db:     a.db,
+		logger: a.logger,
+	}).createTableGtidExecutedV4()
+	if err != nil {
+		return err
 	}
+	a.logger.Debug("after createTableGtidExecutedV4")
+
+	for i := range a.dbs {
+		a.dbs[i].PsDeleteExecutedGtid, err = a.dbs[i].Db.PrepareContext(a.ctx,
+			fmt.Sprintf("delete from %v.%v where job_name = ? and hex(source_uuid) = ?",
+				g.DtleSchemaName, g.GtidExecutedTableV4))
+		if err != nil {
+			return err
+		}
+		a.dbs[i].PsInsertExecutedGtid, err = a.dbs[i].Db.PrepareContext(a.ctx,
+			fmt.Sprintf("replace into %v.%v (job_name,source_uuid,gtid,gtid_set) values (?, ?, ?, null)",
+				g.DtleSchemaName, g.GtidExecutedTableV4))
+		if err != nil {
+			return err
+		}
+
+	}
+	a.logger.Debug("after prepare stmt for gtid_executed table")
+
+	// 将executedV4表的记录加载到a.gtidSet; 至于a.gtidItemMap用于判断什么时候清理executedV4
+	a.gtidItemMap, err = SelectAllGtidExecuted(a.db, a.subject, a.gtidSet)
+	if err != nil {
+		return err
+	}
+
+	a.logger.Debug("after SelectAllGtidExecuted")
 
 	for i := 0; i < a.mysqlContext.ParallelWorkers; i++ {
 		go a.MtsWorker(i)
@@ -297,7 +296,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 				a.logger.Info("skip an fwd executed tx", "sid", txSid, "gno", txGno)
 			}
 		}
-	} else if base.GtidSetContains(a.gtidSetLock, a.gtidSet, txSid, txGno) {
+	} else if base.GtidSetContains(a.gtidSetLock, a.gtidSet, txSid, txGno) { // 也是可以防回环
 		a.logger.Info("skip an executed tx", "sid", txSid, "gno", txGno)
 		skipEntry = true
 	}
@@ -344,7 +343,9 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 			return err
 		}
 	} else {
-		if binlogEntry.Index == 0 { // index 0 rotate
+		// Index不为0则是大事务
+		if binlogEntry.Index == 0 {
+			// rotated是中继才会用到
 			if rotated {
 				if !a.mtsManager.WaitForAllCommitted(a.logger.With("rotate", a.replayingBinlogFile)) {
 					return nil // TODO shutdown
@@ -389,13 +390,14 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 			}
 		}
 
+		// 填充binlogEntry.TableItem, 表结构信息, 后面使用
 		err = a.setTableItemForBinlogEntry(entryCtx)
 		if err != nil {
 			return err
 		}
 
 		if !isBig && !a.mysqlContext.UseMySQLDependency {
-			newLC := a.wsManager.GatLastCommit(entryCtx, a.logger)
+			newLC := a.wsManager.GatLastCommit(entryCtx, a.logger) // 事务组
 			binlogEntry.Coordinates.(*common.MySQLCoordinateTx).LastCommitted = newLC
 			a.logger.Debug("WritesetManager", "lc", newLC, "seq", binlogEntry.Coordinates.GetSequenceNumber(),
 				"gno", txGno)
@@ -408,7 +410,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 				}
 			}
 			a.logger.Info("bigtx ApplyBinlogEvent", "gno", txGno, "index", binlogEntry.Index)
-			err = a.ApplyBinlogEvent(0, entryCtx)
+			err = a.ApplyBinlogEvent(0, entryCtx) // 直接回放, 不走MTS回放
 			if err != nil {
 				return err
 			}
@@ -417,7 +419,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 				return nil // shutdown
 			}
 			a.logger.Debug("a binlogEntry MTS enqueue.", "gno", txGno)
-			a.applyBinlogMtsTxQueue <- entryCtx
+			a.applyBinlogMtsTxQueue <- entryCtx // 走MTS回放
 		}
 	}
 	return nil
@@ -824,6 +826,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 		isBigTx := binlogEntry.IsPartOfBigTx()
 		if !a.SkipGtidExecutedTable && a.sourceType == "mysql" {
 			if binlogEntry.IsOneStmtDDL() && a.mysqlContext.SetGtidNext {
+				// set gtid_next = 'automatic'
 				err1 := dbApplier.SetGtidNextAutomatic(a.ctx)
 				if err1 != nil {
 					err = errors.Wrapf(err1, "restore gtid_next")
@@ -837,6 +840,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 				logger.Debug("insert gno", "gno", gno, "rows", binlogEntryCtx.Rows)
 			}
 
+			// 加一条记录:  (a.subject, serverId, gno, null)
 			_, err = dbApplier.PsInsertExecutedGtid.ExecContext(a.ctx,
 				a.subject, binlogEntry.Coordinates.GetSid().(uuid.UUID).Bytes(), gno)
 			if err != nil {
@@ -851,7 +855,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 		if _, err := dbApplier.Db.ExecContext(a.ctx, "commit"); err != nil {
 			return errors.Wrap(err, "dbApplier.Tx.Commit")
 		} else {
-			a.mtsManager.Executed(binlogEntry)
+			a.mtsManager.Executed(binlogEntry) // mtsManager标记binlogEntry的SeqNumber为已执行
 		}
 		a.inBigTx = false
 		if a.printTps {

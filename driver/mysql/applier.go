@@ -85,7 +85,7 @@ type Applier struct {
 	stubFullApplyDelay time.Duration
 
 	storeManager *common.StoreManager
-	gtidCh       chan common.CoordinatesI
+	gtidCh       chan common.CoordinatesI // 单个binlogEvent回放完成后会触发该ch
 
 	stage      string
 	memory1    *int64
@@ -93,9 +93,9 @@ type Applier struct {
 	event      *eventer.Eventer
 	taskConfig *drivers.TaskConfig
 
-	gtidSet      *gomysql.MysqlGTIDSet
+	gtidSet      *gomysql.MysqlGTIDSet // 最实时的gtid数据, 接受来自gtidCh的信号后立即更新
 	gtidSetLock  *sync.RWMutex
-	targetGtid   gomysql.GTIDSet
+	targetGtid   gomysql.GTIDSet // 当到达该target, job会置为finished, 见testTargetGtid
 	stateDir     string
 	revExtractor *Extractor
 	fwdExtractor *Extractor
@@ -147,6 +147,7 @@ func NewApplier(
 	return a, nil
 }
 
+// 单个binlogEvent回放完成后会更新a.gtidSet, 定时将这个数据刷到consul和a.mysqlContext.Gtid
 func (a *Applier) updateGtidLoop() {
 	a.wg.Add(1)
 	defer a.wg.Done()
@@ -157,6 +158,7 @@ func (a *Applier) updateGtidLoop() {
 	var pos int64
 
 	needUpdate := false
+	// func: 将a.gtidSet 赋给 a.mysqlContext.Gtid
 	doUpdate := func() {
 		if needUpdate { // catch by reference
 			needUpdate = false
@@ -172,6 +174,7 @@ func (a *Applier) updateGtidLoop() {
 	}
 
 	needUpload := true
+	// func: a.mysqlContext.Gtid 放到consul
 	doUpload := func() {
 		if needUpload {
 			needUpload = false
@@ -223,10 +226,10 @@ func (a *Applier) updateGtidLoop() {
 		select {
 		case <-a.shutdownCh:
 			return
-		case <-tUpload.C:
+		case <-tUpload.C: // 15s Ticker
 			doUpdate()
 			doUpload()
-		case <-tUpdate.C:
+		case <-tUpdate.C: // 2s Ticker
 			doUpdate()
 		case coord := <-a.gtidCh:
 			needUpdate = true
@@ -240,8 +243,9 @@ func (a *Applier) updateGtidLoop() {
 					testTargetGtid()
 					a.gtidSetLock.RUnlock()
 				}
-			} else {
+			} else { // 单个binlogEvent回放完成后会触发该ch
 				a.gtidSetLock.Lock()
+				// 将coord add到a.gtidSet
 				common.UpdateGtidSet(a.gtidSet, coord.GetSid().(uuid.UUID), coord.GetGNO())
 				if a.targetGtid != nil {
 					testTargetGtid()
@@ -254,6 +258,7 @@ func (a *Applier) updateGtidLoop() {
 	}
 }
 
+// a.mysqlContext.Gtid => a.gtidSet
 func (a *Applier) prepareGTID() {
 	var err error
 
@@ -401,6 +406,7 @@ func (a *Applier) Run() {
 
 	go a.doFullCopy()
 	go func() {
+		// 增量applier
 		err := a.ai.Run()
 		if err != nil {
 			a.onError(common.TaskStateDead, err)
@@ -619,7 +625,7 @@ func (a *Applier) subscribeNats() (err error) {
 				return
 			}
 			gs := gs0.(*gomysql.MysqlGTIDSet)
-			for _, uuidSet := range gs.Sets {
+			for _, uuidSet := range gs.Sets { // 这里是全量的逻辑
 				a.gtidSet.AddSet(uuidSet)
 			}
 			a.mysqlContext.Gtid = dumpData.Coord.GetTxSet()
@@ -1160,7 +1166,6 @@ func (a *Applier) Shutdown() error {
 	return nil
 }
 
-// a.targetGtid没啥卵用
 func (a *Applier) watchTargetGtid() {
 	target, err := a.storeManager.WatchTargetGtid(a.subject, a.shutdownCh)
 	if err != nil {

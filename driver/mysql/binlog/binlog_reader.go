@@ -450,7 +450,7 @@ func (b *BinlogReader) handleEventGSet(gset gomysql.GTIDSet) {
 
 func (b *BinlogReader) handleEvent(ev *replication.BinlogEvent, entriesChannel chan<- *common.EntryContext) error {
 	switch ev.Header.EventType {
-	case replication.GTID_EVENT:
+	case replication.GTID_EVENT: // 每个事务的入口
 		evt := ev.Event.(*replication.GTIDEvent)
 		b.currentCoordMutex.Lock()
 		// TODO this does not unlock until function return. wrap with func() if needed
@@ -476,9 +476,11 @@ func (b *BinlogReader) handleEvent(ev *replication.BinlogEvent, entriesChannel c
 			OriginalSize: 1, // GroupMaxSize is default to 1 and we send on EntriesSize >= GroupMaxSize
 			Rows:         0,
 		}
-	case replication.QUERY_EVENT:
+
+	case replication.QUERY_EVENT: // DDL
 		return b.handleQueryEvent(ev, entriesChannel)
-	case replication.XID_EVENT:
+
+	case replication.XID_EVENT: // 每个事务的出口
 		evt := ev.Event.(*replication.XIDEvent)
 		b.currentCoord.LogPos = int64(ev.Header.LogPos)
 		// TODO is the pos the start or the end of a event?
@@ -489,6 +491,7 @@ func (b *BinlogReader) handleEvent(ev *replication.BinlogEvent, entriesChannel c
 
 		b.handleEventGSet(evt.GSet)
 	default:
+		// DML
 		if rowsEvent, ok := ev.Event.(*replication.RowsEvent); ok {
 			return b.handleRowsEvent(ev, rowsEvent, entriesChannel)
 		}
@@ -504,6 +507,7 @@ func queryIsCommit(query string) bool {
 	return len(query) == 6 && strings.ToUpper(query) == "COMMIT"
 }
 
+// 仅处理DDL
 func (b *BinlogReader) handleQueryEvent(ev *replication.BinlogEvent,
 	entriesChannel chan<- *common.EntryContext) error {
 	mysqlCoordinateTx := b.entryContext.Entry.Coordinates.(*common.MySQLCoordinateTx)
@@ -820,7 +824,7 @@ func (b *BinlogReader) setDtleQuery(query string) string {
 }
 
 func (b *BinlogReader) sendEntry(entriesChannel chan<- *common.EntryContext) {
-	isBig := b.entryContext.Entry.IsPartOfBigTx()
+	isBig := b.entryContext.Entry.IsPartOfBigTx() // !(b.Index == 0 && b.Final)
 	coordinate := b.entryContext.Entry.Coordinates.(*common.MySQLCoordinateTx)
 	if isBig {
 		newVal := atomic.AddInt32(&b.BigTxCount, 1)
@@ -982,7 +986,7 @@ func (b *BinlogReader) DataStreamEvents(entriesChannel chan<- *common.EntryConte
 				break
 			}
 			time.Sleep(time.Duration(sleepMs) * time.Millisecond)
-			if bigTxThrottlingCount * sleepMs >= 15 * 1000 {
+			if bigTxThrottlingCount*sleepMs >= 15*1000 {
 				b.logger.Warn("reader big tx throttling for 15s", "local", localCount, "global", globalLimit)
 				bigTxThrottlingCount = 0
 			}
@@ -1846,6 +1850,7 @@ func (b *BinlogReader) onMeetTarget() {
 	_ = b.Close()
 }
 
+// DML处理
 func (b *BinlogReader) handleRowsEvent(ev *replication.BinlogEvent, rowsEvent *replication.RowsEvent,
 	entriesChannel chan<- *common.EntryContext) (err error) {
 
@@ -1933,7 +1938,7 @@ func (b *BinlogReader) handleRowsEvent(ev *replication.BinlogEvent, rowsEvent *r
 		}
 	}
 
-	if dml == common.UpdateDML && len(rowsEvent.Rows) % 2 != 0 {
+	if dml == common.UpdateDML && len(rowsEvent.Rows)%2 != 0 {
 		return fmt.Errorf("bad RowsEvent. expect 2N rows for an update event. got %v. gno %v",
 			len(rowsEvent.Rows), coordinate.GNO)
 	}
@@ -2023,14 +2028,16 @@ func (b *BinlogReader) handleRowsEvent(ev *replication.BinlogEvent, rowsEvent *r
 			return 0
 		}()
 
+		// 为啥可以reuse?
 		if reuseLast != 0 {
 			b.logger.Debug("reuseLast. not reusing", "step", reuseLast)
 			b.entryContext.Entry.Events = append(b.entryContext.Entry.Events, *dmlEvent)
 		}
 
+		// 大事务分割
 		if b.entryContext.OriginalSize >= b.mysqlContext.DumpEntryLimit {
 			b.logger.Debug("splitting big tx", "index", b.entryContext.Entry.Index)
-			b.entryContext.Entry.Final = false
+			b.entryContext.Entry.Final = false // 初始化为true, 所以这里须置为false
 			b.sendEntry(entriesChannel)
 			entry := common.NewBinlogEntry()
 			entry.Coordinates = b.entryContext.Entry.Coordinates
