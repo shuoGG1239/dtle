@@ -310,6 +310,7 @@ func (a *Applier) Run() {
 		return
 	}
 
+	// TwoWaySync意义不大, 毕竟两个方向可以落在不同的dtle节点, 没必要非要挤在同一个进程运行
 	if a.mysqlContext.TwoWaySync {
 		execCtx2 := &common.ExecContext{
 			Subject:  a.subject + "_dtrev",
@@ -353,7 +354,7 @@ func (a *Applier) Run() {
 
 	var sourceType string
 	sourceType = "mysql"
-	a.prepareGTID()
+	a.prepareGTID() // 初始化a.gtidSet (从a.mysqlContext.Gtid读取)
 
 	//a.logger.Debug("the connectionconfi host is ",a.mysqlContext.ConnectionConfig.Host)
 	//	a.logger.Info("Apply binlog events to %s.%d", a.mysqlContext.ConnectionConfig.Host, a.mysqlContext.ConnectionConfig.Port)
@@ -367,10 +368,11 @@ func (a *Applier) Run() {
 		a.onError(common.TaskStateDead, errors.Wrap(err, "NewApplierIncr"))
 		return
 	}
-	a.ai.fwdExtractor = a.fwdExtractor
-	a.ai.EntryExecutedHook = func(entry *common.DataEntry) {
+	// fwdExtractor 一般为nil
+	a.ai.fwdExtractor = a.fwdExtractor                       // forwardExtractor跟本applier是一对的,也就是fwdExtractor的binlog由该applier接收
+	a.ai.EntryExecutedHook = func(entry *common.DataEntry) { // 单个binlog回放完成后执行
 		if entry.Final {
-			a.gtidCh <- entry.Coordinates
+			a.gtidCh <- entry.Coordinates // 更新a.gtidSet
 		}
 		if entry.IsPartOfBigTx() {
 			bs, err := (&common.BigTxAck{
@@ -647,6 +649,7 @@ func (a *Applier) subscribeNats() (err error) {
 		return err
 	}
 
+	// 增量msg, 收到binlog后推到a.ai.incrBytesQueue
 	incrNMM := common.NewNatsMsgMerger(a.logger.With("nmm", "incr"))
 	_, err = a.natsConn.Subscribe(fmt.Sprintf("%s_incr_hete", a.subject), func(m *gonats.Msg) {
 		a.logger.Debug("incr. recv a msg.")

@@ -196,6 +196,7 @@ func (h *taskHandle) NewRunner(d *Driver) (runner DriverHandle, err error) {
 				return nil, errors.Wrap(err, "NewOracleExtractor")
 			}
 			runner = e
+			// TwoWaySync意义不大, 毕竟两个方向可以落在不同的dtle节点, 没必要非要挤在同一个进程运行
 			if h.driverConfig.TwoWaySync {
 				ctx2 := &common.ExecContext{
 					Subject:  ctx.Subject + "_dtrev",

@@ -711,6 +711,7 @@ func (e *Extractor) initNatsPubClient(natsAddr string) (err error) {
 	return nil
 }
 
+// 接收e.binlogReader的binlog信号并推到nats
 // initiateStreaming begins treaming of binary log events and registers listeners for such events
 func (e *Extractor) initiateStreaming() error {
 	e.wg.Add(1)
@@ -730,6 +731,7 @@ func (e *Extractor) initiateStreaming() error {
 	return nil
 }
 
+// 连接 e.db (用于增量), e.singletonDB(用于全量)
 // --EventsStreamer--
 func (e *Extractor) initDBConnections() (err error) {
 	eventsStreamerUri := e.mysqlContext.SrcConnectionConfig.GetDBUri()
@@ -751,6 +753,7 @@ func (e *Extractor) initDBConnections() (err error) {
 		return err
 	}
 
+	// 全量dump指定REPEATABLE-READ
 	{
 		getTxIsolationVarName := func(mysqlVersionDigit int) string {
 			if mysqlVersionDigit >= 50720 {

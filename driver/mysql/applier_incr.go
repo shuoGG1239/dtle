@@ -75,7 +75,7 @@ type ApplierIncr struct {
 	bigTxEventQueue chan *dmlExecItem
 	bigTxEventWg    sync.WaitGroup
 
-	fwdExtractor *Extractor // 仅仅用来防回环, 其实不用也不会回环, 双重保证?
+	fwdExtractor *Extractor // 仅仅用来防回环, 其实不用也不会回环, 双重保证? 一般来说也是nil, 毕竟不一定非要部署在一个进程里
 }
 
 func NewApplierIncr(applier *Applier, sourcetype string) (*ApplierIncr, error) {
@@ -310,13 +310,13 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 	// endregion
 
 	rotated := false
-	if binlogEntry.Index == 0 {
+	if binlogEntry.Index == 0 { // 非大事务固定为0
 		// this must be after duplication check
 		if a.replayingBinlogFile != binlogEntry.Coordinates.GetLogFile() {
 			rotated = true
 			a.replayingBinlogFile = binlogEntry.Coordinates.GetLogFile()
 		}
-
+		// 下面是清理executed的逻辑
 		gtidSetItem := a.gtidItemMap.GetItem(binlogEntry.Coordinates.GetSid().(uuid.UUID))
 		a.logger.Debug("gtidSetItem", "NRow", gtidSetItem.NRow)
 		if gtidSetItem.NRow >= cleanupGtidExecutedLimit {
@@ -329,11 +329,12 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 		gtidSetItem.NRow += 1
 	}
 
-	if binlogEntry.Coordinates.GetSequenceNumber() == 0 {
+	if binlogEntry.Coordinates.GetSequenceNumber() == 0 { // 5.6的逻辑, 不走MTS, 直接回放
 		// MySQL 5.6: non mts
 		if isBig {
 			a.inBigTx = true
 		}
+		// 从a.tableItems获取该binlog相关表信息, 填充到entryCtx.TableItems
 		err := a.setTableItemForBinlogEntry(entryCtx)
 		if err != nil {
 			return err
@@ -343,8 +344,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 			return err
 		}
 	} else {
-		// Index不为0则是大事务
-		if binlogEntry.Index == 0 {
+		if binlogEntry.Index == 0 { // 非大事务固定为0
 			// rotated是中继才会用到
 			if rotated {
 				if !a.mtsManager.WaitForAllCommitted(a.logger.With("rotate", a.replayingBinlogFile)) {
@@ -840,7 +840,7 @@ func (a *ApplierIncr) ApplyBinlogEvent(workerIdx int, binlogEntryCtx *common.Ent
 				logger.Debug("insert gno", "gno", gno, "rows", binlogEntryCtx.Rows)
 			}
 
-			// 加一条记录:  (a.subject, serverId, gno, null)
+			// 加一条记录:  (a.subject, serverId, gno, null) 这样插入的qps会不会太大?
 			_, err = dbApplier.PsInsertExecutedGtid.ExecContext(a.ctx,
 				a.subject, binlogEntry.Coordinates.GetSid().(uuid.UUID).Bytes(), gno)
 			if err != nil {
