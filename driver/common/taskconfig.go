@@ -64,7 +64,7 @@ type DtleTaskConfig struct {
 
 	ParallelWorkers       int  `codec:"ParallelWorkers"`
 	DependencyHistorySize int  `codec:"DependencyHistorySize"`
-	UseMySQLDependency    bool `codec:"UseMySQLDependency"`
+	UseMySQLDependency    bool `codec:"UseMySQLDependency"` // 其实就是开启WriteSet
 	ForeignKeyChecks      bool `codec:"ForeignKeyChecks"`
 	DumpEntryLimit        int  `codec:"DumpEntryLimit"`
 	SetGtidNext           bool `codec:"SetGtidNext"`

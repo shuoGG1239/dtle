@@ -271,7 +271,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 	isBig := binlogEntry.IsPartOfBigTx()
 	txSid := binlogEntry.Coordinates.GetSidStr() // src serverId
 
-	if a.inBigTx && binlogEntry.Index == 0 {
+	if a.inBigTx && binlogEntry.Index == 0 { // 异常情况, 大事务中不会有index为0的情况, 所以应该是丢包重传了
 		a.logger.Info("bigtx: found resent BinlogEntry", "gno", txGno)
 		// src is resending an earlier BinlogEntry
 		_, err = a.dbs[0].Db.ExecContext(a.ctx, "rollback")
@@ -415,7 +415,7 @@ func (a *ApplierIncr) handleEntry(entryCtx *common.EntryContext) (err error) {
 				return err
 			}
 		} else {
-			if !a.mtsManager.WaitForExecution(binlogEntry) {
+			if !a.mtsManager.WaitForExecution(binlogEntry) { // binlogEntry的SeqNum和LastCommitted
 				return nil // shutdown
 			}
 			a.logger.Debug("a binlogEntry MTS enqueue.", "gno", txGno)

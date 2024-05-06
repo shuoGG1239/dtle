@@ -448,6 +448,8 @@ func (b *BinlogReader) handleEventGSet(gset gomysql.GTIDSet) {
 	}
 }
 
+// 一个事务(BinlogEntry)由多个BingEvent组成: 从GTID_EVENT起始, XID_EVENT结束, 中间有多个QUERY_EVENT或ROWS_QUERY_EVENT;
+// 每一个Event都有一个SequenceNumber, entry.Coordinates即GTID_EVENT则个开头Event的Sequence信息
 func (b *BinlogReader) handleEvent(ev *replication.BinlogEvent, entriesChannel chan<- *common.EntryContext) error {
 	switch ev.Header.EventType {
 	case replication.GTID_EVENT: // 每个事务的入口

@@ -35,12 +35,12 @@ type MtsManager struct {
 	shutdownCh    chan struct{}
 	// We cannot update LC to a seqNum until all its predecessors has been executed.
 	// We put the pending seqNums here.
-	m          Int64PriQueue
+	m          Int64PriQueue // 最小堆, 先消费最小的SeqNum, 作用就是一个队列
 	chExecuted chan int64
 	forceMts   bool
 }
 
-//  shutdownCh: close to indicate a shutdown
+// shutdownCh: close to indicate a shutdown
 func NewMtsManager(shutdownCh chan struct{}, logger g.LoggerType) *MtsManager {
 	mm := &MtsManager{
 		lastCommitted: 0,
@@ -56,7 +56,7 @@ func NewMtsManager(shutdownCh chan struct{}, logger g.LoggerType) *MtsManager {
 	return mm
 }
 
-//  This function must be called sequentially.
+// This function must be called sequentially.
 func (mm *MtsManager) WaitForAllCommitted(logger g.LoggerType) bool {
 	t := time.NewTimer(30 * time.Second)
 	defer t.Stop()
@@ -78,7 +78,8 @@ func (mm *MtsManager) WaitForAllCommitted(logger g.LoggerType) bool {
 }
 
 // block for waiting. return true for can_execute, false for abortion.
-//  This function must be called sequentially.
+//
+//	This function must be called sequentially.
 func (mm *MtsManager) WaitForExecution(binlogEntry *common.DataEntry) bool {
 	return mm.WaitForExecution0(
 		binlogEntry.Coordinates.GetSequenceNumber(),
@@ -110,6 +111,7 @@ func (mm *MtsManager) WaitForExecution0(seq int64, lc int64) bool {
 	}
 }
 
+// LcUpdater lastCommittedUpdater
 func (mm *MtsManager) LcUpdater() {
 	for {
 		select {
@@ -117,7 +119,6 @@ func (mm *MtsManager) LcUpdater() {
 			return
 
 		case seqNum := <-mm.chExecuted:
-//			g.Logger.Debug("LcUpdater", "seq", seqNum)
 			if seqNum <= mm.lastCommitted {
 				// ignore it
 			} else {
@@ -125,9 +126,9 @@ func (mm *MtsManager) LcUpdater() {
 
 				// update LC to max-continuous-executed
 				for mm.m.Len() > 0 {
-					least := mm.m[0]
+					least := mm.m[0] // seqNum最小堆堆顶
 					if least == mm.lastCommitted+1 {
-						heap.Pop(&mm.m)
+						heap.Pop(&mm.m) // pop堆顶
 						atomic.AddInt64(&mm.lastCommitted, 1)
 						select {
 						case mm.updated <- struct{}{}:
@@ -142,10 +143,12 @@ func (mm *MtsManager) LcUpdater() {
 	}
 }
 
+// mm.chExecuted <- binlogEntry.SeqNum
 func (mm *MtsManager) Executed(binlogEntry *common.DataEntry) {
 	mm.Executed0(binlogEntry.Coordinates.GetSequenceNumber())
 }
 
+// mm.chExecuted <- seq
 func (mm *MtsManager) Executed0(seq int64) {
 	select {
 	case <-mm.shutdownCh:
@@ -154,8 +157,8 @@ func (mm *MtsManager) Executed0(seq int64) {
 	}
 }
 
-// HashTx returns an empty slice if there is no row events (DDL TX),
-// or there is a row event refering to a no-PK table.
+// 计算该BinEntry每个event每行的hash值, len(hashes) = len(uk) * len(event) * len(event.Rows)
+// HashTx returns an empty slice if there is no row events (DDL TX) or there is a row event refering to a no-PK table.
 func HashTx(entryCtx *common.EntryContext) (hashes []uint64) {
 	entry := entryCtx.Entry
 	for i := range entry.Events {
@@ -170,6 +173,7 @@ func HashTx(entryCtx *common.EntryContext) (hashes []uint64) {
 		}
 
 		for _, uk := range cols.UniqueKeys {
+			// hash(ukName, db, tb, ukColData)
 			addPKE := func(row []interface{}) {
 				g.Logger.Debug("writeset use key", "name", uk.Name, "columns", uk.Columns.Ordinals)
 				h := fnv.New64()
@@ -179,6 +183,7 @@ func HashTx(entryCtx *common.EntryContext) (hashes []uint64) {
 				_, _ = h.Write(g.HASH_STRING_SEPARATOR_BYTES)
 				_, _ = h.Write([]byte(event.TableName))
 
+				// 获取本row的uk列数据, 写入hash
 				for _, colIndex := range uk.Columns.Ordinals {
 					if common.RowColumnIsNull(row, colIndex) {
 						return // do not add
@@ -215,16 +220,19 @@ func NewWritesetManager(historySize int) *WritesetManager {
 		dependencyHistorySize: historySize,
 	}
 }
+
+// hash不相同的entry并行执行, 等价于有相同lastCommit (其实不等价, 只是为了复用事务组的逻辑)
 func (wm *WritesetManager) GatLastCommit(entryCtx *common.EntryContext, logger g.LoggerType) int64 {
 	entry := entryCtx.Entry
 	lastCommit := entry.Coordinates.(*common.MySQLCoordinateTx).LastCommitted
 
-	hashes := HashTx(entryCtx)
+	hashes := HashTx(entryCtx) // DDL的hashed为空 或者 无主键
 
 	exceedsCapacity := false
 	canUseWritesets := len(hashes) != 0
 
 	if canUseWritesets {
+		// 有外键则不允许UseWritesets
 		for i := range entry.Events {
 			if entry.Events[i].FKParent {
 				canUseWritesets = false
@@ -239,7 +247,8 @@ func (wm *WritesetManager) GatLastCommit(entryCtx *common.EntryContext, logger g
 
 		lastCommit = wm.lastCommonParent
 		for _, hash := range hashes {
-			if seq, exist := wm.history[hash]; exist {
+			// 计算所有冲突行中最大的 sequence_number给lastCommit，并将被修改行的哈希值插入history
+			if seq, exist := wm.history[hash]; exist { // 有行冲突了, 需要更新lastCommit
 				if seq > lastCommit && seq < entry.Coordinates.GetSequenceNumber() {
 					lastCommit = seq
 				}

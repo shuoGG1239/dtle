@@ -263,7 +263,7 @@ func (a *GtidExecutedCreater) createTableGtidExecutedV4() error {
 	}
 }
 
-// 清除已经执行的记录, 执行记录是在哪里insert的? 在这里PsInsertExecutedGtid
+// 聚合已经执行的记录, 执行记录是在哪里insert的? 在这里PsInsertExecutedGtid
 func (a *ApplierIncr) cleanGtidExecuted(sid uuid.UUID, txSid string) error {
 	if !a.mtsManager.WaitForAllCommitted(a.logger.With("txSid", txSid)) {
 		return nil // shutdown

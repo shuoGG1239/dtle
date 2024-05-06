@@ -3333,11 +3333,12 @@ func (d *DataEvent) Unmarshal(buf []byte) (uint64, error) {
 	return i + 26, nil
 }
 
+// 单个事务 (除了大事务)
 type DataEntry struct {
-	Coordinates CoordinatesI
+	Coordinates CoordinatesI // GTID_EVENT的位点, 即一个事务的起始位点
 	Events      []DataEvent
 	Index       int32 // 给大事务用的, 非大事务固定是0
-	Final       bool  // 小事务固定true
+	Final       bool  // 小事务固定true (回放逻辑里面Final为true才会执行commit)
 }
 
 func (d *DataEntry) Size() (s uint64) {
